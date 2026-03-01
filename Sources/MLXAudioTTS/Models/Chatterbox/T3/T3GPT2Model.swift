@@ -316,6 +316,9 @@ public class T3GPT2Model: Module {
         let genStart = CFAbsoluteTimeGetCurrent()
 
         // Generation loop
+        // Only eval(nextToken) is required per step (to read the sampled token ID).
+        // speechLogits is evaluated lazily when squeezed in the next iteration,
+        // avoiding an extra GPU sync per token.
         for step in 0 ..< maxNewTokens {
             var logits = speechLogits.squeezed(axis: 1) // (1, vocab)
 
@@ -324,7 +327,7 @@ public class T3GPT2Model: Module {
                 logits = applyRepetitionPenalty(logits: logits, generatedIds: generatedIds, penalty: repetitionPenalty, vocabSize: hp.speechTokensDictSize)
             }
 
-            // Sample
+            // Sample — eval is needed here to read the token ID via item()
             let nextToken = sampleToken(logits: logits, temperature: temperature, topK: topK, topP: topP)
             eval(nextToken)
             let nextTokenId = nextToken[0].item(Int.self)
@@ -345,10 +348,10 @@ public class T3GPT2Model: Module {
             // Embed next token for next step
             let nextTokenEmbed = speechEmb(MLXArray([Int32(nextTokenId)]).reshaped([1, 1]))
 
-            // Forward with cache
+            // Forward with cache — no eval() here, let MLX batch the computation
+            // with the next iteration's squeeze + sample
             hidden = tfmr(nextTokenEmbed, cache: cache)
             speechLogits = speechHead(hidden[0..., (-1)..., 0...])
-            eval(speechLogits)
         }
 
         let totalElapsed = CFAbsoluteTimeGetCurrent() - genStart
